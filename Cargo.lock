@@ -1264,8 +1264,10 @@ name = "portable_music_player"
 version = "0.1.0"
 dependencies = [
  "bt-hci 0.2.1",
+ "byteorder",
  "critical-section",
  "embassy-executor",
+ "embassy-sync 0.7.2",
  "embassy-time",
  "embedded-hal-bus",
  "embedded-io",

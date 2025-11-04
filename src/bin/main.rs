@@ -10,10 +10,12 @@ use bt_hci::controller::ExternalController;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use esp_hal::clock::CpuClock;
+use esp_hal::gpio::Output;
 use esp_hal::timer::systimer::SystemTimer;
 use esp_hal::timer::timg::TimerGroup;
 use esp_wifi::ble::controller::BleConnector;
 use log::info;
+use portable_music_player::fs::FileSystem;
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
@@ -51,6 +53,9 @@ async fn main(spawner: Spawner) -> ! {
     let _ble_controller = ExternalController::<_, 20>::new(transport);
 
     // TODO: Spawn some tasks
+
+    // let cs = Output::new(peripherals.21, , config);
+    let fs = FileSystem::new(peripherals.SPI2.into(), cs, sclk, mosi, miso);
     let _ = spawner;
 
     loop {

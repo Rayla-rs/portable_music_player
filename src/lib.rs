@@ -6,61 +6,27 @@
     holding buffers for the duration of a data transfer."
 )]
 
-use embedded_sdmmc::{
-    BlockDevice, Error, SdCardError, ShortFileName, TimeSource, Timestamp, Volume,
-};
+use byteorder::{BigEndian, ByteOrder};
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use esp_hal::{
-    delay::Delay,
-    dma::{self, AnyGdmaChannel},
-    gpio::Output,
+    dma::AnyGdmaChannel,
     i2s::{
-        master::{DataFormat, I2s, Standard},
+        master::{asynch::I2sWriteDmaTransferAsync, DataFormat, I2s, I2sTx, Standard},
         AnyI2s,
     },
-    peripherals::{DMA, DMA_CH0},
-    spi::master::Spi,
     time::Rate,
-    Blocking,
+    Async, Blocking,
 };
-use nanomp3::Decoder;
-use pmp_config::Library;
-use postcard::accumulator::{CobsAccumulator, FeedResult};
-use serde::Deserialize;
+use nanomp3::{Decoder, FrameInfo};
+use pmp_config::Track;
 
-// display buffer
-// play buffer
-// history buffer (could be integrated with play buffer)
+use crate::fs::{File, Volume};
 
-const MAX_DIRS: usize = 4;
-const MAX_FILES: usize = 4;
-const MAX_VOLUMES: usize = 4;
-type SdCard<'a> = embedded_sdmmc::SdCard<
-    embedded_hal_bus::spi::ExclusiveDevice<Spi<'a, Blocking>, Output<'a>, Delay>,
-    Delay,
->;
-type File<'a> =
-    embedded_sdmmc::File<'a, SdCard<'a>, DummyTimesource, MAX_DIRS, MAX_FILES, MAX_VOLUMES>;
+mod app;
+pub mod fs;
 
-/// A dummy timesource, which is mostly important for creating files.
-#[derive(Default)]
-pub struct DummyTimesource;
-
-impl TimeSource for DummyTimesource {
-    // In theory you could use the RTC of the rp2040 here, if you had
-    // any external time synchronizing device.
-    fn get_timestamp(&self) -> Timestamp {
-        Timestamp {
-            year_since_1970: 0,
-            zero_indexed_month: 0,
-            zero_indexed_day: 0,
-            hours: 0,
-            minutes: 0,
-            seconds: 0,
-        }
-    }
-}
-
-enum State {}
+const TRANSFER_SIZE: usize = 256;
+type Transfer<'a> = I2sWriteDmaTransferAsync<'a, &'a mut [u8; TRANSFER_SIZE]>;
 
 struct Player<'a> {
     volume: u8,
@@ -82,92 +48,83 @@ impl<'a> Player<'a> {
     }
 }
 
-struct Fs(SdCard<'static>);
-
-struct Track {
-    position: usize,
+async fn player(
+    driver: I2sTx<'static, Async>,
+    track: Track,
+    mut file: File<'static>,
+    buffer: &'static mut [u8; TRANSFER_SIZE],
+) -> Result<(), esp_hal::i2s::master::Error> {
+    // TODO reconstruct i2s bus for rate control
+    // let mut buffer = [0u8; TRANSFER_SIZE];
+    let mut transfer = driver.write_dma_circular_async(buffer)?;
+    let e = run(&mut transfer, file, &mut 1.).await;
+    Ok(())
 }
 
-impl Track {
-    fn consume(&mut self, consumed: usize) {
-        self.position += consumed
-        // assert not out of file
-    }
+pub struct TrackPlayer {
+    transfer: I2sWriteDmaTransferAsync<'static, [f32; 128]>,
+    file: File<'static>,
+    time: f64,
 }
 
-fn test(player: Player) {
+pub async fn run<'a>(
+    transfer: &mut Transfer<'a>,
+    mut file: File<'static>,
+    time: &mut f64,
+) -> Result<(), esp_hal::i2s::master::Error> {
     let mut decoder = Decoder::new();
-    let mut pcm = [0f32; 4];
-    let (consumed, info) = decoder.decode(&[1, 2, 3], &mut pcm);
-    // ring buffer moment
-    if let Some(info) = info {}
-    // decoder.decode(mp3, pcm)
-    // I2s::new(i2s, standard, data_format, sample_rate, channel)
-}
+    let mut mp3_buf = [0u8; 128];
+    let mut pcm_buf = [0f32; nanomp3::MAX_SAMPLES_PER_FRAME];
 
-enum DecodeError {
-    Read,
-    Overfull,
-    DeserError,
-}
+    while let Ok(read) = embedded_io::Read::read(&mut file, &mut mp3_buf) {
+        let mut raw_buf = &mp3_buf[0..read];
+        while raw_buf.len() > 0 {
+            let (consumed, info) = decoder.decode(&raw_buf, &mut pcm_buf);
+            raw_buf = &raw_buf[consumed..];
 
-pub fn decode<T: for<'de> Deserialize<'de>>(file: File<'static>) -> Result<T, DecodeError> {
-    let mut raw_buf = [0u8; 32];
-    let mut cobs_buf = CobsAccumulator::<256>::new();
-
-    loop {
-        match file.read(&mut raw_buf) {
-            Ok(read) => {
-                match cobs_buf.feed::<T>(&raw_buf[..read]) {
-                    FeedResult::Consumed => continue,
-                    FeedResult::OverFull(_) => break Err(DecodeError::Overfull),
-                    FeedResult::DeserError(_) => break Err(DecodeError::DeserError),
-                    FeedResult::Success { data, .. } => break Ok(data),
-                };
+            if let Some(info) = info {
+                transfer_frame(transfer, &pcm_buf, info, time).await?
             }
-            Err(_) => break Err(DecodeError::Read),
         }
     }
+    Ok(())
 }
 
-fn file_sys(
-    card: Volume<'static, SdCard, DummyTimesource, MAX_DIRS, MAX_FILES, MAX_VOLUMES>,
-) -> Result<(), Error<SdCardError>> {
-    let root_dir = card.open_root_dir()?;
-    root_dir.iterate_dir(|entry| {
-        entry.attributes.is_directory();
+async fn transfer_frame<'a>(
+    transfer: &mut Transfer<'a>,
+    pcm_buf: &[f32],
+    info: FrameInfo,
+    time: &mut f64,
+) -> Result<(), esp_hal::i2s::master::Error> {
+    let n = info.samples_produced * usize::from(info.channels.num());
+    let bytes = &mut [0u8; nanomp3::MAX_SAMPLES_PER_FRAME * 4][..4 * n];
+    for i in 0..n {
+        // TODO WARN NOTE WARNING volume control here :3
+        BigEndian::write_f32(&mut bytes[i * 4..i + 1 * 4], pcm_buf[i]);
+    }
 
-        // entry.name;
-        //
-    })?;
-    let file =
-        root_dir.open_file_in_dir(ShortFileName::this_dir(), embedded_sdmmc::Mode::ReadOnly)?;
+    transfer_bytes(transfer, bytes).await?;
+
+    // Update time
+    *time += (info.samples_produced as f64) / (info.sample_rate as f64);
+
+    // TODO check here for pausing
+    // self.file.rewind();
 
     Ok(())
 }
 
-// async_embedded_sdmmc or embedded_sdmmc
-// display
-// buttons
-// audio codec
-// audio out
-//
-// heapless for ring buffer
-
-// no alloc, no std, hper performant blt and i2c audio library
-// uwudio
-// #[cfg(test)]
-mod tests {
-    use heapless::String;
-    use serde::Deserialize;
-
-    #[derive(Deserialize)]
-    struct TestToml {
-        other: String<20>,
+/// Transfers all bytes asyncronously
+async fn transfer_bytes<'a>(
+    transfer: &mut Transfer<'a>,
+    mut bytes: &[u8],
+) -> Result<(), esp_hal::i2s::master::Error> {
+    while bytes.len() > 0 {
+        bytes = &bytes[transfer.push(&bytes).await?..];
     }
+    Ok(())
+}
 
-    // #[test]
-    fn test_deserialize() {
-        let res: TestToml = toml::from_str("other = \"testinging\" \n name = \"hell\"").unwrap();
-    }
+fn test() {
+    let chan = Channel::<NoopRawMutex, u32, 3>::new();
 }
