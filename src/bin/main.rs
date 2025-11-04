@@ -8,9 +8,7 @@
 
 use bt_hci::controller::ExternalController;
 use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
 use esp_hal::clock::CpuClock;
-use esp_hal::gpio::Output;
 use esp_hal::timer::systimer::SystemTimer;
 use esp_hal::timer::timg::TimerGroup;
 use esp_wifi::ble::controller::BleConnector;
@@ -55,11 +53,18 @@ async fn main(spawner: Spawner) -> ! {
     // TODO: Spawn some tasks
 
     // let cs = Output::new(peripherals.21, , config);
-    let fs = FileSystem::new(peripherals.SPI2.into(), cs, sclk, mosi, miso);
-    let _ = spawner;
+    let fs = FileSystem::new(
+        peripherals.SPI2,
+        peripherals.GPIO10,
+        peripherals.GPIO12,
+        peripherals.GPIO13,
+        peripherals.GPIO11,
+    )
+    .unwrap();
 
-    loop {
-        info!("Hello world!");
-        Timer::after(Duration::from_secs(1)).await;
-    }
+    spawner.must_spawn(portable_music_player::app::run(
+        spawner.make_send(),
+        &fs,
+        todo!(),
+    ));
 }

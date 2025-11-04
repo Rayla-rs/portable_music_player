@@ -50,6 +50,7 @@ postcard = "1.1.3"
 pmp_config = { path = "../pmp_config"}
 byteorder = { version = "1.4", default_features = false }
 embassy-sync = "0.7.2"
+embassy-futures = "0.1.2"
 
 [profile.dev]
 # Rust debug is too slow.

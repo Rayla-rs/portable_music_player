@@ -4,7 +4,7 @@ use embedded_sdmmc::{
 };
 use esp_hal::{
     delay::Delay,
-    gpio::{Input, Output},
+    gpio::{AnyPin, Input, InputConfig, Level, Output, OutputConfig},
     spi::{
         master::{Config, Spi},
         AnySpi,
@@ -78,35 +78,41 @@ pub fn decode<T: for<'de> Deserialize<'de>>(file: File) -> Result<T, DecodeError
     }
 }
 
-pub struct FileSystem<'a> {
-    volume_mgr: VolumeManager<'a>,
-}
+/// File System wrapper for embedded_sdmmc
+pub struct FileSystem<'a>(VolumeManager<'a>);
 
 impl<'a> FileSystem<'a> {
     pub fn new(
-        spi: AnySpi<'a>,
-        cs: Output<'a>,
-        sclk: Output<'a>,
-        mosi: Output<'a>,
-        miso: Input<'a>,
+        spi: impl Into<AnySpi<'a>>,
+        cs: impl Into<AnyPin<'a>>,
+        sclk: impl Into<AnyPin<'a>>,
+        mosi: impl Into<AnyPin<'a>>,
+        miso: impl Into<AnyPin<'a>>,
     ) -> Result<Self, embedded_sdmmc::Error<SdCardError>> {
-        let volume_mgr = embedded_sdmmc::VolumeManager::new(
+        Ok(FileSystem(embedded_sdmmc::VolumeManager::new(
             SdCard::new(
                 ExclusiveDevice::new(
-                    Spi::new(spi, Config::default())
+                    Spi::new(spi.into(), Config::default())
                         .unwrap()
-                        .with_sck(sclk)
-                        .with_mosi(mosi)
-                        .with_miso(miso),
-                    cs,
+                        .with_sck(Output::new(
+                            sclk.into(),
+                            Level::Low,
+                            OutputConfig::default(),
+                        ))
+                        .with_mosi(Output::new(
+                            mosi.into(),
+                            Level::Low,
+                            OutputConfig::default(),
+                        ))
+                        .with_miso(Input::new(miso.into(), InputConfig::default())),
+                    Output::new(cs.into(), Level::High, OutputConfig::default()),
                     Delay::new(),
                 )
                 .unwrap(),
                 Delay::new(),
             ),
             DummyTimesource,
-        );
-        Ok(FileSystem { volume_mgr })
+        )))
     }
 
     pub fn open_file(
@@ -114,11 +120,11 @@ impl<'a> FileSystem<'a> {
         name: impl ToShortFileName,
     ) -> Result<File<'a>, embedded_sdmmc::Error<SdCardError>> {
         Ok(self
-            .volume_mgr
+            .0
             .open_volume(VolumeIdx(0))?
             .open_root_dir()?
             .open_file_in_dir(name, embedded_sdmmc::Mode::ReadOnly)?
             .to_raw_file()
-            .to_file(&self.volume_mgr))
+            .to_file(&self.0))
     }
 }
