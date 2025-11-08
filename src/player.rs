@@ -11,7 +11,7 @@ use esp_hal::{
 use nanomp3::Decoder;
 use pmp_config::Track;
 
-use crate::fs::File;
+use crate::{fs::File, visualizer::Visualizer};
 
 pub struct Sink<'a, TXBUF: ReadBuffer> {
     volume: f32,
@@ -71,6 +71,7 @@ impl<'a, TXBUF: ReadBuffer> Sink<'a, TXBUF> {
 
 pub struct TrackDecoder<'a> {
     decoder: Decoder,
+    visualizer: Visualizer,
     track: Track,
     file: File<'a>,
     time: f64,
@@ -83,6 +84,7 @@ impl<'a> TrackDecoder<'a> {
     ) -> Result<Self, embedded_sdmmc::Error<embedded_sdmmc::SdCardError>> {
         Ok(Self {
             decoder: Decoder::new(),
+            visualizer: Visualizer::default(),
             track,
             file,
             time: 0.,
@@ -103,10 +105,14 @@ impl<'a> TrackDecoder<'a> {
                 raw_buf = &raw_buf[consumed..];
 
                 if let Some(info) = info {
-                    sink.write_frame(
-                        &pcm_buf[..info.samples_produced * usize::from(info.channels.num())],
-                    )
-                    .await?;
+                    let pcm_buf =
+                        &pcm_buf[..info.samples_produced * usize::from(info.channels.num())];
+
+                    sink.write_frame(pcm_buf).await?;
+
+                    // FFT
+                    self.visualizer
+                        .extend_with_chan(pcm_buf, info.channels.num().into());
 
                     self.time += (info.samples_produced as f64) / (info.sample_rate as f64);
                 }
@@ -141,5 +147,16 @@ impl<'a, TXBUF: ReadBuffer> Player<'a, TXBUF> {
             }
             None => None,
         })
+    }
+
+    pub fn sample_visualizer(&self) {
+        match self.track.as_ref() {
+            Some(track) => {
+                track.visualizer.sample(441000.0);
+            }
+            None => {
+                Visualizer::default().sample(441000.0);
+            }
+        }
     }
 }

@@ -8,4 +8,6 @@
 
 pub mod app;
 pub mod fs;
+pub mod input;
 pub mod player;
+mod visualizer;
