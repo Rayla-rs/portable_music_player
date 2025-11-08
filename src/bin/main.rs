@@ -14,6 +14,7 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_wifi::ble::controller::BleConnector;
 use log::info;
 use portable_music_player::fs::FileSystem;
+use portable_music_player::player::{Player, Sink};
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
@@ -62,9 +63,19 @@ async fn main(spawner: Spawner) -> ! {
     )
     .unwrap();
 
-    spawner.must_spawn(portable_music_player::app::run(
-        spawner.make_send(),
-        &fs,
-        todo!(),
-    ));
+    let mut words = [0u8; 256];
+    let player = Player::new(
+        Sink::new(
+            peripherals.I2S0,
+            peripherals.DMA_CH0,
+            peripherals.GPIO0,
+            peripherals.GPIO2,
+            peripherals.GPIO3,
+            peripherals.GPIO4,
+            &mut words,
+        )
+        .unwrap(),
+    );
+
+    portable_music_player::app::run(spawner, &fs, player).await
 }

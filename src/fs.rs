@@ -1,7 +1,5 @@
 use embedded_hal_bus::spi::ExclusiveDevice;
-use embedded_sdmmc::{
-    filesystem::ToShortFileName, SdCardError, ShortFileName, TimeSource, Timestamp, VolumeIdx,
-};
+use embedded_sdmmc::{filesystem::ToShortFileName, TimeSource, Timestamp, VolumeIdx};
 use esp_hal::{
     delay::Delay,
     gpio::{AnyPin, Input, InputConfig, Level, Output, OutputConfig},
@@ -11,8 +9,11 @@ use esp_hal::{
     },
     Blocking,
 };
+use pmp_config::Track;
 use postcard::accumulator::{CobsAccumulator, FeedResult};
 use serde::Deserialize;
+
+use crate::player::TrackDecoder;
 
 const MAX_DIRS: usize = 4;
 const MAX_FILES: usize = 4;
@@ -30,6 +31,7 @@ pub type Directory<'a> =
     embedded_sdmmc::Directory<'a, SdCard<'a>, DummyTimesource, MAX_DIRS, MAX_FILES, MAX_VOLUMES>;
 pub type VolumeManager<'a> =
     embedded_sdmmc::VolumeManager<SdCard<'a>, DummyTimesource, MAX_DIRS, MAX_FILES, MAX_VOLUMES>;
+type Error = embedded_sdmmc::Error<embedded_sdmmc::SdCardError>;
 
 /// A dummy timesource, which is mostly important for creating files.
 #[derive(Default)]
@@ -88,7 +90,7 @@ impl<'a> FileSystem<'a> {
         sclk: impl Into<AnyPin<'a>>,
         mosi: impl Into<AnyPin<'a>>,
         miso: impl Into<AnyPin<'a>>,
-    ) -> Result<Self, embedded_sdmmc::Error<SdCardError>> {
+    ) -> Result<Self, Error> {
         Ok(FileSystem(embedded_sdmmc::VolumeManager::new(
             SdCard::new(
                 ExclusiveDevice::new(
@@ -115,10 +117,7 @@ impl<'a> FileSystem<'a> {
         )))
     }
 
-    pub fn open_file(
-        &'a self,
-        name: impl ToShortFileName,
-    ) -> Result<File<'a>, embedded_sdmmc::Error<SdCardError>> {
+    pub fn open_file(&'a self, name: impl ToShortFileName) -> Result<File<'a>, Error> {
         Ok(self
             .0
             .open_volume(VolumeIdx(0))?
@@ -126,5 +125,10 @@ impl<'a> FileSystem<'a> {
             .open_file_in_dir(name, embedded_sdmmc::Mode::ReadOnly)?
             .to_raw_file()
             .to_file(&self.0))
+    }
+
+    pub fn open_track(&'a self, track: Track) -> Result<TrackDecoder<'a>, Error> {
+        let file = self.open_file(track.title.as_str())?;
+        TrackDecoder::new(track, file)
     }
 }

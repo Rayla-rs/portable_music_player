@@ -1,33 +1,24 @@
-use embassy_executor::SendSpawner;
+use embassy_executor::Spawner;
+use esp_hal::dma::ReadBuffer;
 use pmp_config::Library;
 
 use crate::{
     fs::{decode, FileSystem},
-    player::Sink,
+    player::Player,
 };
 
-/// Main task
-#[embassy_executor::task]
-pub async fn run(
-    send_spawner: SendSpawner,
-    fs: &'static FileSystem<'static>,
-    player: Sink<'static>,
+pub async fn run<'a, 'b, TXBUF: ReadBuffer>(
+    spawner: Spawner,
+    fs: &'a FileSystem<'a>,
+    mut player: Player<'a, TXBUF>,
 ) -> ! {
     let lib: Library = decode(fs.open_file("config.toml").unwrap()).unwrap();
     loop {
-        let a = send_spawner.spawn(test());
-
-        fs.open_file(
-            lib.playlists
-                .first()
-                .unwrap()
-                .tracks
-                .first()
-                .unwrap()
-                .path
-                .as_str(),
-        )
-        .unwrap();
+        // let a = spawner.spawn(test());
+        let ply = lib.playlists[0].tracks.get(0).unwrap();
+        let decoder = fs.open_track(ply.clone()).unwrap();
+        player.play(decoder);
+        player.next().await.unwrap();
     }
 }
 
