@@ -5,6 +5,7 @@
     reason = "mem::forget is generally not safe to do with esp_hal types, especially those \
     holding buffers for the duration of a data transfer."
 )]
+#![feature(slice_as_array)]
 
 pub mod app;
 pub mod fs;

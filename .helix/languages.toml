@@ -6,6 +6,6 @@ environment.RUSTUP_TOOLCHAIN = "stable"
 
 [language-server.rust-analyzer.config]
 check.allTargets = false
-cargo.target = "xtensa-esp32s3-none-elf"
+cargo.target = "xtensa-esp32-none-elf" #s3
 check.extraEnv.RUSTUP_TOOLCHAIN = "esp"
 cargo.extraEnv.RUSTUP_TOOLCHAIN = "esp"

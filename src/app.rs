@@ -4,13 +4,15 @@ use pmp_config::Library;
 
 use crate::{
     fs::{decode, FileSystem},
+    input::{Channel, Receiver},
     player::Player,
 };
 
-pub async fn run<'a, 'b, TXBUF: ReadBuffer>(
-    spawner: Spawner,
+pub async fn run<'a, 'b, 'ch, TXBUF: ReadBuffer>(
+    _spawner: Spawner,
     fs: &'a FileSystem<'a>,
     mut player: Player<'a, TXBUF>,
+    _input_receiver: Receiver<'ch>,
 ) -> ! {
     let lib: Library = decode(fs.open_file("config.toml").unwrap()).unwrap();
     loop {

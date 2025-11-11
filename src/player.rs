@@ -112,7 +112,7 @@ impl<'a> TrackDecoder<'a> {
 
                     // FFT
                     self.visualizer
-                        .extend_with_chan(pcm_buf, info.channels.num().into());
+                        .extend_with_channels(pcm_buf, info.channels.num().into());
 
                     self.time += (info.samples_produced as f64) / (info.sample_rate as f64);
                 }

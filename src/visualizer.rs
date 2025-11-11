@@ -9,7 +9,7 @@ pub struct Visualizer {
 
 impl Visualizer {
     /// Write slice to history buf
-    pub fn extend_with_chan(&mut self, other: &[f32], channels: usize) {
+    pub fn extend_with_channels(&mut self, other: &[f32], channels: usize) {
         other
             .chunks(channels)
             .map(|chunk| {
@@ -24,7 +24,7 @@ impl Visualizer {
             Some(
                 microfft::real::rfft_128(&mut {
                     let mut input = [0f32; 128];
-                    let mut iterator = self.buf.oldest_ordered().take(128);
+                    let mut iterator = self.buf.oldest_ordered();
                     input.fill_with(|| *iterator.next().expect("Iterator should be cyclic!"));
                     input
                 })
