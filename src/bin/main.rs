@@ -33,8 +33,6 @@ async fn main(spawner: Spawner) -> ! {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
-    // esp_alloc::heap_allocator!(size: 64 * 1024);
-
     let timer0 = TimerGroup::new(peripherals.TIMG1);
     esp_hal_embassy::init(timer0.timer0);
 
@@ -46,20 +44,20 @@ async fn main(spawner: Spawner) -> ! {
         spawner,
         &FileSystem::new(
             peripherals.SPI2,
-            peripherals.GPIO10,
-            peripherals.GPIO12,
-            peripherals.GPIO13,
-            peripherals.GPIO11,
+            peripherals.GPIO16, // DAT3 / CS
+            peripherals.GPIO14, // CLK
+            peripherals.GPIO15, // CMD
+            peripherals.GPIO2,  // DAT0
         )
         .unwrap(),
         Player::new(
+            // ES7243 DAC
             Sink::new(
-                peripherals.I2S0,
-                peripherals.DMA_I2S0,
-                peripherals.GPIO0,
-                peripherals.GPIO2,
-                peripherals.GPIO3,
-                peripherals.GPIO4,
+                peripherals.I2S1,
+                peripherals.DMA_I2S1,
+                peripherals.GPIO0,  // MCLK
+                peripherals.GPIO32, // BLCK
+                peripherals.GPIO33, // WS
                 &mut words,
             )
             .unwrap(),
@@ -67,8 +65,12 @@ async fn main(spawner: Spawner) -> ! {
         spawn_input_task(
             &spawner,
             &INPUT_CHANNEL,
-            peripherals.GPIO5,
-            peripherals.GPIO8,
+            peripherals.GPIO36, // Up Button
+            peripherals.GPIO35, // Down Button
+            peripherals.GPIO37, // Enter Button
+            peripherals.GPIO38, // Back Button
+            peripherals.GPIO34, // Increment Volume Button
+            peripherals.GPIO39, // Decrement Volume Button
         ),
     )
     .await

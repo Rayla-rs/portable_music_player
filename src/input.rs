@@ -25,9 +25,10 @@ pub const fn create_input_channel() -> Channel {
 pub enum InputEvent {
     Up,
     Down,
-    Left,
-    Right,
-    Center,
+    Enter,
+    Back,
+    IncrementVolume,
+    DecrementVolume,
 }
 
 pub struct Button<'a> {
@@ -48,6 +49,10 @@ pub fn spawn_input_task(
     channel: &'static Channel,
     up: impl InputPin + 'static,
     down: impl InputPin + 'static,
+    enter: impl InputPin + 'static,
+    back: impl InputPin + 'static,
+    increment_volume: impl InputPin + 'static,
+    decrement_volume: impl InputPin + 'static,
 ) -> Receiver<'static> {
     spawner.must_spawn(input_task(
         channel.sender().clone(),
@@ -60,6 +65,22 @@ pub fn spawn_input_task(
                 input: Input::new(down, InputConfig::default()),
                 event: InputEvent::Down,
             },
+            Button {
+                input: Input::new(enter, InputConfig::default()),
+                event: InputEvent::Enter,
+            },
+            Button {
+                input: Input::new(back, InputConfig::default()),
+                event: InputEvent::Back,
+            },
+            Button {
+                input: Input::new(increment_volume, InputConfig::default()),
+                event: InputEvent::IncrementVolume,
+            },
+            Button {
+                input: Input::new(decrement_volume, InputConfig::default()),
+                event: InputEvent::DecrementVolume,
+            },
         ],
     ));
     channel.receiver()
@@ -68,7 +89,7 @@ pub fn spawn_input_task(
 #[embassy_executor::task(pool_size = 4)]
 async fn input_task(
     sender: Sender<'static, CriticalSectionRawMutex, InputEvent, INPUT_CHANNEL_CAPACITY>,
-    mut buttons: [Button<'static>; 2],
+    mut buttons: [Button<'static>; 6],
 ) -> ! {
     input_task_inner(sender, &mut buttons).await
 }

@@ -4,7 +4,7 @@ use pmp_config::Library;
 
 use crate::{
     fs::{decode, FileSystem},
-    input::{Channel, Receiver},
+    input::Receiver,
     player::Player,
 };
 

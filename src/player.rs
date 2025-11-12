@@ -25,7 +25,6 @@ impl<'a, TXBUF: ReadBuffer> Sink<'a, TXBUF> {
         mclk: impl PeripheralOutput<'a>,
         bclk: impl PeripheralOutput<'a>,
         ws: impl PeripheralOutput<'a>,
-        dout: impl PeripheralOutput<'a>,
         words: TXBUF,
     ) -> Result<Self, esp_hal::i2s::master::Error> {
         Ok(Self {
@@ -42,7 +41,6 @@ impl<'a, TXBUF: ReadBuffer> Sink<'a, TXBUF> {
             .i2s_tx
             .with_bclk(bclk)
             .with_ws(ws)
-            .with_dout(dout)
             .build(&mut [])
             .write_dma_circular_async(words)?,
         })
