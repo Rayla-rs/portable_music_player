@@ -1,6 +1,6 @@
 use byteorder::{BigEndian, ByteOrder};
 use esp_hal::{
-    dma::{DmaChannelFor, ReadBuffer},
+    dma::{DmaChannelFor, DmaDescriptor, ReadBuffer},
     gpio::interconnect::PeripheralOutput,
     i2s::{
         master::{asynch::I2sWriteDmaTransferAsync, DataFormat, I2s, Standard},
@@ -12,6 +12,8 @@ use nanomp3::Decoder;
 use pmp_config::Track;
 
 use crate::{fs::File, visualizer::Visualizer};
+
+// have diffrent ui for if duration is know or not
 
 pub struct Sink<'a, TXBUF: ReadBuffer> {
     volume: f32,
@@ -25,6 +27,7 @@ impl<'a, TXBUF: ReadBuffer> Sink<'a, TXBUF> {
         mclk: impl PeripheralOutput<'a>,
         bclk: impl PeripheralOutput<'a>,
         ws: impl PeripheralOutput<'a>,
+        descriptors: &'static mut [DmaDescriptor],
         words: TXBUF,
     ) -> Result<Self, esp_hal::i2s::master::Error> {
         Ok(Self {
@@ -37,11 +40,11 @@ impl<'a, TXBUF: ReadBuffer> Sink<'a, TXBUF> {
                 dma,
             )
             .into_async()
-            .with_mclk(mclk)
+            // .with_mclk(mclk)
             .i2s_tx
             .with_bclk(bclk)
             .with_ws(ws)
-            .build(&mut [])
+            .build(descriptors)
             .write_dma_circular_async(words)?,
         })
     }
@@ -67,17 +70,17 @@ impl<'a, TXBUF: ReadBuffer> Sink<'a, TXBUF> {
     }
 }
 
-pub struct TrackDecoder<'a> {
+pub struct TrackDecoder<'a, 'b> {
     decoder: Decoder,
     visualizer: Visualizer,
-    track: Track,
+    track: &'b Track,
     file: File<'a>,
     time: f64,
 }
 
-impl<'a> TrackDecoder<'a> {
+impl<'a, 'b> TrackDecoder<'a, 'b> {
     pub fn new(
-        track: Track,
+        track: &'b Track,
         file: File<'a>,
     ) -> Result<Self, embedded_sdmmc::Error<embedded_sdmmc::SdCardError>> {
         Ok(Self {
@@ -120,17 +123,17 @@ impl<'a> TrackDecoder<'a> {
     }
 }
 
-pub struct Player<'a, TXBUF: ReadBuffer> {
-    track: Option<TrackDecoder<'a>>,
+pub struct Player<'a, 'b, TXBUF: ReadBuffer> {
+    track: Option<TrackDecoder<'a, 'b>>,
     sink: Sink<'a, TXBUF>,
 }
 
-impl<'a, TXBUF: ReadBuffer> Player<'a, TXBUF> {
+impl<'a, 'b, TXBUF: ReadBuffer> Player<'a, 'b, TXBUF> {
     pub fn new(sink: Sink<'a, TXBUF>) -> Self {
         Self { track: None, sink }
     }
 
-    pub fn play(&mut self, track: TrackDecoder<'a>) {
+    pub fn play(&mut self, track: TrackDecoder<'a, 'b>) {
         self.track = Some(track)
     }
 

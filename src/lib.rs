@@ -1,5 +1,4 @@
 #![no_std]
-#![deny(unsafe_code)]
 #![deny(
     clippy::mem_forget,
     reason = "mem::forget is generally not safe to do with esp_hal types, especially those \
@@ -11,4 +10,5 @@ pub mod app;
 pub mod fs;
 pub mod input;
 pub mod player;
+mod ui;
 mod visualizer;

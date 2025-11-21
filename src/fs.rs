@@ -2,13 +2,19 @@ use embedded_hal_bus::spi::ExclusiveDevice;
 use embedded_sdmmc::{filesystem::ToShortFileName, TimeSource, Timestamp, VolumeIdx};
 use esp_hal::{
     delay::Delay,
-    gpio::{AnyPin, Input, InputConfig, Level, Output, OutputConfig},
+    gpio::{
+        interconnect::{PeripheralInput, PeripheralOutput},
+        AnyPin, Input, InputConfig, InputPin, Level, Output, OutputConfig, OutputPin,
+    },
     spi::{
+        self,
         master::{Config, Spi},
         AnySpi,
     },
+    time::Rate,
     Blocking,
 };
+use esp_println::{dbg, println};
 use pmp_config::Track;
 use postcard::accumulator::{CobsAccumulator, FeedResult};
 use serde::Deserialize;
@@ -69,7 +75,10 @@ pub fn decode<T: for<'de> Deserialize<'de>>(file: File) -> Result<T, DecodeError
         match file.read(&mut raw_buf) {
             Ok(read) => {
                 match cobs_buf.feed::<T>(&raw_buf[..read]) {
-                    FeedResult::Consumed => continue,
+                    FeedResult::Consumed => {
+                        log::info!("continue");
+                        continue;
+                    }
                     FeedResult::OverFull(_) => break Err(DecodeError::Overfull),
                     FeedResult::DeserError(_) => break Err(DecodeError::DeserError),
                     FeedResult::Success { data, .. } => break Ok(data),
@@ -86,35 +95,48 @@ pub struct FileSystem<'a>(VolumeManager<'a>);
 impl<'a> FileSystem<'a> {
     pub fn new(
         spi: impl Into<AnySpi<'a>>,
-        cs: impl Into<AnyPin<'a>>,
-        sclk: impl Into<AnyPin<'a>>,
-        mosi: impl Into<AnyPin<'a>>,
-        miso: impl Into<AnyPin<'a>>,
+        cs: impl OutputPin + 'a,
+        dummy: impl OutputPin + 'a,
+
+        sclk: impl PeripheralOutput<'a>,
+        mosi: impl PeripheralOutput<'a>,
+        miso: impl PeripheralInput<'a> + InputPin,
     ) -> Result<Self, Error> {
-        Ok(FileSystem(embedded_sdmmc::VolumeManager::new(
-            SdCard::new(
-                ExclusiveDevice::new(
-                    Spi::new(spi.into(), Config::default())
-                        .unwrap()
-                        .with_sck(Output::new(
-                            sclk.into(),
-                            Level::Low,
-                            OutputConfig::default(),
-                        ))
-                        .with_mosi(Output::new(
-                            mosi.into(),
-                            Level::Low,
-                            OutputConfig::default(),
-                        ))
-                        .with_miso(Input::new(miso.into(), InputConfig::default())),
-                    Output::new(cs.into(), Level::High, OutputConfig::default()),
-                    Delay::new(),
-                )
-                .unwrap(),
-                Delay::new(),
-            ),
-            DummyTimesource,
-        )))
+        // let mut out = Output::new(
+        //     cs,
+        //     Level::Low,
+        //     OutputConfig::default()
+        //         .with_pull(esp_hal::gpio::Pull::None)
+        //         .with_drive_mode(esp_hal::gpio::DriveMode::OpenDrain),
+        // );
+        let spi = dbg!(Spi::new(
+            spi.into(),
+            Config::default()
+                // .with_frequency(Rate::from_khz(100u32))
+                .with_frequency(Rate::from_mhz(20u32))
+                .with_mode(spi::Mode::_0),
+        )
+        .unwrap()
+        .with_sck(sclk)
+        .with_sio0(mosi)
+        .with_miso(miso));
+
+        let driver = ExclusiveDevice::new(
+            spi,
+            Output::new(cs, Level::High, OutputConfig::default()),
+            Delay::new(),
+        )
+        .unwrap();
+
+        let sd = embedded_sdmmc::SdCard::new(driver, Delay::new());
+
+        // let sd = embedded_sdmmc::SdCard::new(driver, Delay::new());
+        println!("[LOOK_HERE] {:?}", sd.num_bytes());
+        todo!()
+        // Ok(FileSystem(embedded_sdmmc::VolumeManager::new(
+        // sd,
+        // DummyTimesource,
+        // )))
     }
 
     pub fn open_file(&'a self, name: impl ToShortFileName) -> Result<File<'a>, Error> {
@@ -127,7 +149,7 @@ impl<'a> FileSystem<'a> {
             .to_file(&self.0))
     }
 
-    pub fn open_track(&'a self, track: Track) -> Result<TrackDecoder<'a>, Error> {
+    pub fn open_track<'b>(&'a self, track: &'b Track) -> Result<TrackDecoder<'a, 'b>, Error> {
         let file = self.open_file(track.title.as_str())?;
         TrackDecoder::new(track, file)
     }

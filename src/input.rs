@@ -1,5 +1,4 @@
-use core::future::Future;
-
+use core::{fmt::Debug, future::Future};
 use embassy_executor::Spawner;
 use embassy_sync::{
     blocking_mutex::raw::{CriticalSectionRawMutex, RawMutex},
@@ -17,10 +16,12 @@ pub type Receiver<'ch> = embassy_sync::channel::Receiver<
     InputEvent,
     INPUT_CHANNEL_CAPACITY,
 >;
+
 pub const fn create_input_channel() -> Channel {
     Channel::new()
 }
 
+/// Supported Input Events
 #[derive(Debug, Clone, Copy)]
 pub enum InputEvent {
     Up,
@@ -31,13 +32,22 @@ pub enum InputEvent {
     DecrementVolume,
 }
 
-pub struct Button<'a> {
+/// Input peripheral wrapper that can be polled for a event
+#[derive(Debug)]
+pub struct Button<'a, Event: Copy + Clone + Debug> {
     input: Input<'a>,
-    event: InputEvent,
+    event: Event,
 }
 
-impl<'a> Button<'a> {
-    async fn process(&mut self) -> InputEvent {
+impl<'a, Event: Copy + Clone + Debug> Button<'a, Event> {
+    fn new(pin: impl InputPin + 'a, event: Event) -> Self {
+        Self {
+            input: Input::new(pin, InputConfig::default()),
+            event: event,
+        }
+    }
+
+    async fn poll(&mut self) -> Event {
         self.input.wait_for_falling_edge().await;
         self.event
     }
@@ -57,30 +67,12 @@ pub fn spawn_input_task(
     spawner.must_spawn(input_task(
         channel.sender().clone(),
         [
-            Button {
-                input: Input::new(up, InputConfig::default()),
-                event: InputEvent::Up,
-            },
-            Button {
-                input: Input::new(down, InputConfig::default()),
-                event: InputEvent::Down,
-            },
-            Button {
-                input: Input::new(enter, InputConfig::default()),
-                event: InputEvent::Enter,
-            },
-            Button {
-                input: Input::new(back, InputConfig::default()),
-                event: InputEvent::Back,
-            },
-            Button {
-                input: Input::new(increment_volume, InputConfig::default()),
-                event: InputEvent::IncrementVolume,
-            },
-            Button {
-                input: Input::new(decrement_volume, InputConfig::default()),
-                event: InputEvent::DecrementVolume,
-            },
+            Button::new(up, InputEvent::Up),
+            Button::new(down, InputEvent::Down),
+            Button::new(enter, InputEvent::Enter),
+            Button::new(back, InputEvent::Back),
+            Button::new(increment_volume, InputEvent::IncrementVolume),
+            Button::new(decrement_volume, InputEvent::DecrementVolume),
         ],
     ));
     channel.receiver()
@@ -89,14 +81,14 @@ pub fn spawn_input_task(
 #[embassy_executor::task(pool_size = 4)]
 async fn input_task(
     sender: Sender<'static, CriticalSectionRawMutex, InputEvent, INPUT_CHANNEL_CAPACITY>,
-    mut buttons: [Button<'static>; 6],
+    mut buttons: [Button<'static, InputEvent>; 6],
 ) -> ! {
-    input_task_inner(sender, &mut buttons).await
+    button_task(sender, &mut buttons).await
 }
 
-async fn input_task_inner<'a, const N: usize, const COUNT: usize>(
-    sender: Sender<'a, impl RawMutex, InputEvent, N>,
-    buttons: &'a mut [Button<'a>; COUNT],
+async fn button_task<'a, const N: usize, const COUNT: usize, Event: Copy + Clone + Debug>(
+    sender: Sender<'a, impl RawMutex, Event, N>,
+    buttons: &'a mut [Button<'a, Event>; COUNT],
 ) -> ! {
     loop {
         sender
@@ -109,18 +101,15 @@ async fn input_task_inner<'a, const N: usize, const COUNT: usize>(
     }
 }
 
-fn create_futures<'a: 'b, 'b, const COUNT: usize>(
-    buttons: &'b mut [Button<'a>; COUNT],
-) -> [impl Future<Output = InputEvent> + use<'a, 'b, COUNT>; COUNT] {
-    match buttons
-        .iter_mut()
-        .map(|b| b.process())
-        .collect::<Vec<_, COUNT>>()
-        .into_array()
-    {
-        Ok(value) => value,
-        Err(_) => {
-            unreachable!()
-        }
+fn create_futures<'a: 'b, 'b, const COUNT: usize, Event: Copy + Clone + Debug>(
+    buttons: &'b mut [Button<'a, Event>; COUNT],
+) -> [impl Future<Output = Event> + use<'a, 'b, COUNT, Event>; COUNT] {
+    unsafe {
+        buttons
+            .iter_mut()
+            .map(|b| b.poll())
+            .collect::<Vec<_, COUNT>>()
+            .into_array()
+            .unwrap_unchecked()
     }
 }
