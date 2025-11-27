@@ -1,0 +1,3 @@
+CS low: Time out and reads 0xff
+
+CS high: Reads 0 most of the time

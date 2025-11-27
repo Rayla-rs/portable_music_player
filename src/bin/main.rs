@@ -11,18 +11,22 @@ use core::cell::Cell;
 // use alloc::vec::Vec;
 use critical_section::Mutex;
 use embassy_executor::Spawner;
+use embedded_hal::delay::DelayNs;
+use embedded_hal::digital::OutputPin;
+use embedded_hal::spi::{Operation, SpiBus, SpiDevice};
 use embedded_hal_bus::spi::ExclusiveDevice;
 use esp_hal::clock::CpuClock;
 use esp_hal::delay::Delay;
 use esp_hal::dma::{DmaRxBuf, DmaTxBuf};
 use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig};
-use esp_hal::spi::master::{ClockSource, Config, Spi};
+use esp_hal::spi::slave::dma::SpiDma;
+use esp_hal::spi::slave::Spi;
 use esp_hal::spi::DataMode;
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
-use esp_hal::{dma_buffers, peripherals, spi};
+use esp_hal::{dma_buffers, peripheral, peripherals, spi, Blocking};
 use esp_println::{dbg, println};
-use log::info;
+use log::{info, warn};
 use portable_music_player::fs::FileSystem;
 use portable_music_player::input::spawn_input_task;
 use portable_music_player::player::{Player, Sink};
@@ -56,60 +60,36 @@ async fn main(spawner: Spawner) -> ! {
 
     info!("Embassy initialized!");
 
-    let pin_12 = Output::new(
-        unsafe { peripherals.GPIO12.clone_unchecked() },
-        Level::Low,
-        OutputConfig::default(), // .with_drive_mode(esp_hal::gpio::DriveMode::OpenDrain)
-                                 // .with_pull(esp_hal::gpio::Pull::None),
-    );
+    // DMA init
+    let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = dma_buffers!(4000, 4000);
+    let rx_buffer = DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
+    let tx_buffer = DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();
 
+    // SPI Pins
     let sck = peripherals.GPIO14;
     let mosi = peripherals.GPIO15;
     let miso = peripherals.GPIO2;
-    let cs = unsafe { peripherals.GPIO13.clone_unchecked() };
 
-    let mut spi = dbg!(Spi::new(
-        peripherals.SPI2,
-        Config::default()
-            .with_frequency(Rate::from_khz(100))
-            .with_mode(spi::Mode::_0),
-    )
-    .unwrap()
-    .with_sck(sck)
-    // .with_sio0(miso)
-    .with_mosi(mosi)
-    .with_miso(miso)
-    .with_cs(cs));
+    // Card Check
+    let sd_cd = Input::new(peripherals.GPIO34, InputConfig::default());
 
-    let delay = Delay::new();
+    // Power the sd card
+    let mut sd_pwr = Output::new(peripherals.GPIO13, Level::High, OutputConfig::default());
+    Delay::new().delay_nanos(100);
+    sd_pwr.set_level(sd_cd.level());
 
-    let cs_out = Output::new(
-        unsafe { peripherals.GPIO13.clone_unchecked() },
-        Level::Low,
-        OutputConfig::default(), // .with_drive_mode(esp_hal::gpio::DriveMode::OpenDrain)
-                                 // .with_pull(esp_hal::gpio::Pull::None),
-    );
+    // Create SPI Bus
+    let spi = Spi::new(peripherals.SPI2, spi::Mode::_0)
+        .with_mosi(mosi)
+        .with_miso(miso)
+        .with_sck(sck)
+        .with_dma(peripherals.DMA_SPI2);
 
-    for i in 0..u16::MAX {
-        let mut data = [0xde, 0xca, 0xfb, 0xad];
-
-        let _ = spi.half_duplex_read(
-            spi::DataMode::SingleTwoDataLines,
-            spi::master::Command::_1Bit(9, DataMode::SingleTwoDataLines),
-            spi::master::Address::None,
-            2,
-            &mut data,
-        );
-        // spi.transfer(&mut data).unwrap();
-        println!("{:x?}", data);
-        delay.delay_millis(50);
-    }
-
-    let driver = ExclusiveDevice::new(spi, cs_out, Delay::new()).unwrap();
-
+    // Initialize Drivers
+    let driver = SdDevice::new(spi, rx_buffer, tx_buffer, Delay::new());
     let sd = embedded_sdmmc::SdCard::new(driver, Delay::new());
 
-    // let sd = embedded_sdmmc::SdCard::new(driver, Delay::new());
+    // Test
     println!("[LOOK_HERE] {:?}", sd.num_bytes());
 
     // portable_music_player::app::run(
@@ -148,9 +128,147 @@ async fn main(spawner: Spawner) -> ! {
     // ),
     //  )
     // .await
-    let mut a = Input::new(peripherals.GPIO34, InputConfig::default());
     loop {
-        println!("SD_DET Level {:?}", a.level());
+        // println!("SD_DET Level {:?}", sd_cd.level());
         Delay::new().delay_millis(100);
+    }
+}
+
+type BusInner<'a> = (SpiDma<'a, Blocking>, DmaRxBuf, DmaTxBuf);
+
+struct SdDevice<'a, DELAY: DelayNs> {
+    inner: Option<BusInner<'a>>,
+    delay: DELAY,
+}
+
+impl<'a, DELAY: DelayNs> SdDevice<'a, DELAY> {
+    pub fn new(
+        bus: SpiDma<'a, Blocking>,
+        rx_buffer: DmaRxBuf,
+        tx_buffer: DmaTxBuf,
+        delay: DELAY,
+    ) -> Self {
+        Self {
+            inner: Some((bus, rx_buffer, tx_buffer)),
+            delay,
+        }
+    }
+
+    fn use_inner<Result>(
+        &mut self,
+        func: &mut impl FnMut(BusInner<'a>) -> (BusInner<'a>, Result),
+    ) -> Result {
+        match self.inner.take() {
+            Some(inner) => {
+                let (inner, res) = func(inner);
+                let _ = self.inner.replace(inner);
+                res
+            }
+            None => {
+                unreachable!()
+            }
+        }
+    }
+}
+
+impl<'a, DELAY: DelayNs> embedded_hal::spi::ErrorType for SdDevice<'a, DELAY> {
+    type Error = spi::Error;
+}
+
+impl<'a, DELAY: DelayNs> SpiDevice<u8> for SdDevice<'a, DELAY> {
+    fn transaction(&mut self, operations: &mut [Operation<'_, u8>]) -> Result<(), Self::Error> {
+        'ops: {
+            for op in operations {
+                let res = match op {
+                    Operation::Read(buf) => self.read(buf),
+                    Operation::Write(buf) => self.write(buf),
+                    Operation::Transfer(read, write) => self.transfer(read, write),
+                    Operation::TransferInPlace(buf) => self.transfer_in_place(buf),
+                    Operation::DelayNs(ns) => {
+                        self.delay.delay_ns(*ns);
+                        Ok(())
+                    }
+                };
+                if let Err(e) = res {
+                    break 'ops Err(e);
+                }
+            }
+            Ok(())
+        }
+    }
+
+    fn read(&mut self, buf: &mut [u8]) -> Result<(), Self::Error> {
+        self.use_inner(
+            &mut |(bus, rx_buffer, tx_buffer)| match bus.read(buf.len(), rx_buffer) {
+                Ok(transfer) => {
+                    let (bus, rx_buffer) = transfer.wait();
+
+                    // Write data into buf
+                    let _ = rx_buffer.read_received_data(buf);
+                    ((bus, rx_buffer, tx_buffer), Ok(()))
+                }
+                Err(err) => {
+                    let (err, bus, rx_buffer) = err;
+                    ((bus, rx_buffer, tx_buffer), Err(err))
+                }
+            },
+        )
+    }
+
+    fn write(&mut self, buf: &[u8]) -> Result<(), Self::Error> {
+        self.use_inner(&mut |(bus, rx_buffer, mut tx_buffer)| {
+            // Write to tx
+            tx_buffer.fill(buf);
+            match bus.write(buf.len(), tx_buffer) {
+                Ok(transfer) => {
+                    let (bus, tx_buffer) = transfer.wait();
+                    ((bus, rx_buffer, tx_buffer), Ok(()))
+                }
+                Err(err) => {
+                    let (err, bus, tx_buffer) = err;
+                    ((bus, rx_buffer, tx_buffer), Err(err))
+                }
+            }
+        })
+    }
+
+    fn transfer(&mut self, read: &mut [u8], write: &[u8]) -> Result<(), Self::Error> {
+        self.use_inner(&mut |(bus, rx_buffer, mut tx_buffer)| {
+            // Write to tx
+            tx_buffer.fill(write);
+            match bus.transfer(read.len(), rx_buffer, write.len(), tx_buffer) {
+                Ok(transfer) => {
+                    let (bus, (rx_buffer, tx_buffer)) = transfer.wait();
+
+                    // Write data into buf
+                    let _ = rx_buffer.read_received_data(read);
+                    ((bus, rx_buffer, tx_buffer), Ok(()))
+                }
+                Err(err) => {
+                    let (err, bus, rx_buffer, tx_buffer) = err;
+                    ((bus, rx_buffer, tx_buffer), Err(err))
+                }
+            }
+        })
+    }
+
+    fn transfer_in_place(&mut self, buf: &mut [u8]) -> Result<(), Self::Error> {
+        self.use_inner(&mut |(bus, rx_buffer, mut tx_buffer)| {
+            // Write to tx
+            tx_buffer.fill(buf);
+            match bus.transfer(buf.len(), rx_buffer, buf.len(), tx_buffer) {
+                Ok(transfer) => {
+                    let (bus, (rx_buffer, tx_buffer)) = transfer.wait();
+
+                    // Write data into buf
+                    let _ = rx_buffer.read_received_data(buf);
+                    ((bus, rx_buffer, tx_buffer), Ok(()))
+                }
+                Err(err) => {
+                    let (err, bus, rx_buffer, tx_buffer) = err;
+                    ((bus, rx_buffer, tx_buffer), Err(err))
+                }
+            }
+        })
     }
 }
